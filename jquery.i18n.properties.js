@@ -4,7 +4,7 @@
  * Dual licensed under the GPL (http://dev.jquery.com/browser/trunk/jquery/GPL-LICENSE.txt) and
  * MIT (http://dev.jquery.com/browser/trunk/jquery/MIT-LICENSE.txt) licenses.
  *
- * @version     1.2.4
+ * @version     1.2.7
  * @url         https://github.com/jquery-i18n-properties/jquery-i18n-properties
  * @inspiration Localisation assistance for jQuery (http://keith-wood.name/localisation.html)
  *              by Keith Wood (kbwood{at}iinet.com.au) June 2007
@@ -15,11 +15,14 @@
 
     $.i18n = {};
 
-    /** Map holding bundle keys (if mode: 'map') */
+    /**
+     * Map holding bundle keys if mode is 'map' or 'both'. Values of this can also be an
+     * Object, in which case the key is a namespace.
+     */
     $.i18n.map = {};
 
     var debug = function (message) {
-        console.log('i18n::' + message);
+        window.console && console.log('i18n::' + message);
     };
 
     /**
@@ -56,6 +59,7 @@
             name: 'Messages',
             language: '',
             path: '',
+            namespace: null,
             mode: 'vars',
             cache: false,
             debug: false,
@@ -63,13 +67,24 @@
             async: false,
             callback: null
         };
+
         settings = $.extend(defaults, settings);
 
-        // Ensure a trailing slash
+        if (settings.namespace && typeof settings.namespace == 'string') {
+            // A namespace has been supplied, initialise it.
+            if (settings.namespace.match(/^[a-z]*$/)) {
+                $.i18n.map[settings.namespace] = {};
+            } else {
+                debug('Namespaces can only be lower case letters, a - z');
+                settings.namespace = null;
+            }
+        }
+
+        // Ensure a trailing slash on the path
         if (!settings.path.match(/\/$/)) settings.path += '/';
 
         // Try to ensure that we have at a least a two letter language code
-        settings.language = this.normaliseLanguageCode(settings.language);
+        settings.language = this.normaliseLanguageCode(settings);
 
         // Ensure an array
         var files = (settings.name && settings.name.constructor === Array) ? settings.name : [settings.name];
@@ -85,7 +100,7 @@
 
         files.forEach(function (file) {
 
-            var defaultFileName, shortFileName, longFileName;
+            var defaultFileName, shortFileName, longFileName, fileNames;
             // 1. load base (eg, Messages.properties)
             defaultFileName = settings.path + file + '.properties';
             // 2. with language code (eg, Messages_pt.properties)
@@ -95,8 +110,11 @@
             if (settings.language.length >= 5) {
                 var longCode = settings.language.substring(0, 5);
                 longFileName = settings.path + file + '_' + longCode + '.properties';
+                fileNames = [defaultFileName, shortFileName, longFileName];
+            } else {
+                fileNames = [defaultFileName, shortFileName];
             }
-            loadAndParseFiles([defaultFileName, shortFileName, longFileName], settings);
+            loadAndParseFiles(fileNames, settings);
         });
 
         // call callback
@@ -111,15 +129,27 @@
      */
     $.i18n.prop = function (key /* Add parameters as function arguments as necessary  */) {
 
-        var value = $.i18n.map[key];
-        if (value === null) {
-            return '[' + key + ']';
+        var args = [].slice.call(arguments);
+
+        var phvList, namespace;
+        if (args.length == 2) {
+            if ($.isArray(args[1])) {
+                // An array was passed as the second parameter, so assume it is the list of place holder values.
+                phvList = args[1];
+            } else if (typeof args[1] === 'object') {
+                // Second argument is an options object {namespace: 'mynamespace', replacements: ['egg', 'nog']}
+                namespace = args[1].namespace;
+                var replacements = args[1].replacements;
+                args.splice(-1, 1);
+                if (replacements) {
+                    Array.prototype.push.apply(args, replacements);
+                }
+            }
         }
 
-        var phvList;
-        if (arguments.length == 2 && $.isArray(arguments[1])) {
-            // An array was passed as the only parameter, so assume it is the list of place holder values.
-            phvList = arguments[1];
+        var value = (namespace) ? $.i18n.map[namespace][key] : $.i18n.map[key];
+        if (value === null) {
+            return '[' + ((namespace) ? namespace + '#' + key : key) + ']';
         }
 
         // Place holder replacement
@@ -231,7 +261,11 @@
             value = arr;
 
             // Make the array the value for the entry.
-            $.i18n.map[key] = arr;
+            if (namespace) {
+                $.i18n.map[settings.namespace][key] = arr;
+            } else {
+                $.i18n.map[key] = arr;
+            }
         }
 
         if (value.length === 0) {
@@ -248,8 +282,8 @@
             } else if (phvList && value[i] < phvList.length) {
                 // Must be a number
                 str += phvList[value[i]];
-            } else if (!phvList && value[i] + 1 < arguments.length) {
-                str += arguments[value[i] + 1];
+            } else if (!phvList && value[i] + 1 < args.length) {
+                str += args[value[i] + 1];
             } else {
                 str += "{" + value[i] + "}";
             }
@@ -275,14 +309,14 @@
         }
     }
 
-    function loadAndParseFiles(filenames, settings) {
+    function loadAndParseFiles(fileNames, settings) {
 
         if (settings.debug) debug('loadAndParseFiles');
 
-	    if (filenames !== null && filenames.length > 0) {
-		    loadAndParseFile(filenames[0], settings, function () {
-			    filenames.shift();
-			    loadAndParseFiles(filenames,settings);
+	    if (fileNames !== null && fileNames.length > 0) {
+		    loadAndParseFile(fileNames[0], settings, function () {
+			    fileNames.shift();
+			    loadAndParseFiles(fileNames,settings);
 		    });
 	    } else {
             callbackIfComplete(settings);
@@ -336,7 +370,8 @@
         var regPlaceHolder = /(\{\d+})/g;
         var regRepPlaceHolder = /\{(\d+)}/g;
         var unicodeRE = /(\\u.{4})/ig;
-        lines.forEach(function (line, i) {
+        for (var i=0,j=lines.length;i<j;i++) {
+            var line = lines[i];
 
             line = line.trim();
             if (line.length > 0 && line.match("^#") != "#") { // skip comments
@@ -346,7 +381,7 @@
                     var name = decodeURI(pair[0]).trim();
                     var value = pair.length == 1 ? "" : pair[1];
                     // process multi-line values
-                    while (value.match(/\\$/) === "\\") {
+                    while (value.search(/\\$/) != -1) {
                         value = value.substring(0, value.length - 1);
                         value += lines[++i].trimRight();
                     }
@@ -366,7 +401,11 @@
                             });
                         }
                         // add to map
-                        $.i18n.map[name] = value;
+                        if (settings.namespace) {
+                            $.i18n.map[settings.namespace][name] = value;
+                        } else {
+                            $.i18n.map[name] = value;
+                        }
                     }
 
                     /** Mode: bundle keys as vars/functions */
@@ -405,7 +444,7 @@
                     } // END: Mode: bundle keys as vars/functions
                 } // END: if(pair.length > 0)
             } // END: skip comments
-        });
+        }
         eval(parsed);
         settings.filesLoaded += 1;
     }
@@ -418,25 +457,30 @@
         if (regDot.test(key)) {
             var fullname = '';
             var names = key.split(/\./);
-            names.forEach(function (name, i) {
+            for (var i=0,j=names.length;i<j;i++) {
+                var name = names[i];
 
                 if (i > 0) {
                     fullname += '.';
                 }
+
                 fullname += name;
                 if (eval('typeof ' + fullname + ' == "undefined"')) {
                     eval(fullname + '={};');
                 }
-            });
+            }
         }
     }
 
     /** Ensure language code is in the format aa_AA. */
-    $.i18n.normaliseLanguageCode = function (lang) {
+    $.i18n.normaliseLanguageCode = function (settings) {
 
+        var lang = settings.language;
         if (!lang || lang.length < 2) {
-            lang = (navigator.languages) ? navigator.languages[0]
+            if (settings.debug) debug('No language supplied. Pulling it from the browser ...');
+            lang = (navigator.languages && navigator.languages.length > 0) ? navigator.languages[0]
                                         : (navigator.language || navigator.userLanguage /* IE */ || 'en');
+            if (settings.debug) debug('Language from browser: ' + lang);
         }
 
         lang = lang.toLowerCase();
